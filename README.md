@@ -61,6 +61,12 @@ Additional, **you can create a 3 min demo video** to go through your main result
 **Please see the ``UsefulResources.md`` markdown for an overview over useful resources!** Such as, links to **IQM PulLA**, client-side libraries such as **Dynamical Decoupling**, access links to IQM Resonance!
 **To access PulLA you need to be a part of a paid organisation, please approach your mentors about this!**
 
+## [IQM Resonance](https://resonance.iqm.tech/)
+
+**[YOUR SIGNUP LINK FOR RESONANCE](https://resonance.iqm.tech/sign-up/junctionhackathon): https://resonance.iqm.tech/sign-up/iqm-qec-challenge**
+
+IQM Resonance is our quantum computing cloud platform that gives you access to IQM’s quantum hardware to design and run quantum programs. It supports multiple programming frameworks, offers thorough insights on our QPU specifications and your quantum jobs. Tools like the open-source [Qrisp](https://www.qrisp.eu) SDK for development and the pulse-level access package PulLA give you full control over the stack.
+
 ### Related papers
 
 * [Quantum error correction below the surface code threshold](https://www.nature.com/articles/s41586-024-08449-y) (Google Quantum AI, Nature 2024): the current state of the art for what you are doing in this challenge. Too long to read in full during the event, but some details may help you.
