@@ -4,7 +4,7 @@ Take a look at the tutorial in the [IQM Resonance](https://resonance.iqm.tech/) 
 
 ## [IQM Resonance](https://resonance.iqm.tech/)
 
-**[YOUR SIGNUP LINK FOR RESONANCE](https://resonance.iqm.tech/sign-up/junctionhackathon): https://resonance.iqm.tech/sign-up/duquantumiqmchallenge**
+**[YOUR SIGNUP LINK FOR RESONANCE](https://resonance.iqm.tech/sign-up/junctionhackathon): https://resonance.iqm.tech/sign-up/iqm-qec-challenge**
 
 IQM Resonance is our quantum computing cloud platform that gives you access to IQM’s quantum hardware to design and run quantum programs. It supports multiple programming frameworks, offers thorough insights on our QPU specifications and your quantum jobs. Tools like the open-source [Qrisp](https://www.qrisp.eu) SDK for development and the pulse-level access package PulLA give you full control over the stack. 
 
