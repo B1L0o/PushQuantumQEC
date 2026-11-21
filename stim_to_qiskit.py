@@ -51,6 +51,7 @@ def stim_to_qiskit(stim_circuit: stim.Circuit) -> tuple[QuantumCircuit, dict, li
 
     meas_idx  = 0
     meas_order = []
+    touched = set()  #qubits that have been touched by a gate
 
     for instr in flat:
         name = instr.name
@@ -66,7 +67,11 @@ def stim_to_qiskit(stim_circuit: stim.Circuit) -> tuple[QuantumCircuit, dict, li
             # NOTE: if transpile() rejects 'reset' on Emerald, drop the first R per qubit
             # (qubits start in |0>), as stim_to_qrisp.py does.
             for d in dense:
-                qc.reset(d)
+                if d in touched:
+                    raise ValueError(
+                        "Reset en milieu de circuit détecté : Emerald ne le supporte pas. "
+                        "Construis le circuit avec make_stim_circuit(..., no_reset=True)."
+                    )
 
         elif name == "H":
             for d in dense:
@@ -102,5 +107,8 @@ def stim_to_qiskit(stim_circuit: stim.Circuit) -> tuple[QuantumCircuit, dict, li
                 f"If this is a noise/annotation instruction, add it to _STIM_SKIP. "
                 f"If it is a gate instruction, implement it explicitly."
                 )
+        
+        if name != "R":
+            touched.update(dense)
 
     return qc, stim_to_dense, meas_order
