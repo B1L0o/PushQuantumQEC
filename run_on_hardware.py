@@ -2,7 +2,7 @@ from surface_code import *
 from stim_to_qiskit import stim_to_qiskit
 from build_emerald_qubit_rotated import *
 from extract_syndromes import *
-from qiskit import transpile
+from qiskit import transpile    
 
 
 TOKEN = ""
@@ -159,26 +159,102 @@ def run_qrisp(
 
 
 def decode_hardware_results(
-    syndromes: dict
+    syndromes: dict,
+    noisy_circuit: Optional[stim.Circuit] = None,
+    dem: Optional[stim.DetectorErrorModel] = None,
 ) -> tuple[float, float]:
     """
-    Decodes the output of run_qiskit() or run_qrisp() via your desired decoder.
+    Decodes the output of run_qiskit() or run_qrisp() with PyMatching (MWPM) and
+    returns the logical error probability for this round count.
 
-    NOTE: Other parameters can be important for this function, such as a noise model.
-    If you decode with a detector error model (DEM): the DEM’s detectors must match the circuit that ran.
+    PyMatching weights its matching graph with a detector error model (DEM), and the
+    DEM must describe the circuit that ran on hardware (same detectors, same order).
+    The hardware circuit is built with noise=None, so its own DEM would be empty:
+    pass a NOISY copy of that same circuit, e.g.
 
+        noisy = make_stim_circuit(distance, rounds, no_reset=True, noise=DEFAULT_NOISE)
+        ler, err = decode_hardware_results(syndromes, noisy_circuit=noisy)
+
+    Calibration-based noise models improve the decoding: they enter through the
+    noise of `noisy_circuit` (or of the `dem`), not through this function.
 
     Parameters
     ----------
-    syndromes           : dict  output of run_qiskit() / run_qrisp()
+    syndromes     : dict  output of run_qiskit() / run_qrisp(). Uses
+                    "det_events" (shots, num_detectors) and "obs_flips" (shots, num_observables).
+    noisy_circuit : stim.Circuit  the circuit that ran on hardware (no-reset detector
+                    definitions on Emerald) with a noise model. The DEM is derived from it.
+    dem           : stim.DetectorErrorModel  alternative to noisy_circuit, e.g. one that
+                    Qrisp derives from its DetectorExperiment. It must be decomposed into
+                    graphlike errors (detector_error_model(decompose_errors=True)):
+                    PyMatching silently ignores undecomposed errors that flip >2 detectors.
+    Give exactly one of noisy_circuit / dem.
 
     Returns
     -------
-    ler : float   estimated logical error probability for this round count (fit over several round counts to get the logical error rate, see README)
-    err : float   OPTIONAL 1-sigma statistical error
+    ler : float   logical error probability after this many rounds (NOT per round): the
+                  fraction of shots where the decoder's predicted observable flip differs
+                  from the measured one. Fit over several round counts to get the
+                  logical error rate (see README).
+    err : float   1-sigma binomial statistical error on ler.
     """
+    if (noisy_circuit is None) == (dem is None):
+        raise ValueError("Give exactly one of noisy_circuit / dem.")
 
-    # USE e.g. PyMatching to decode
+    # Normalise the syndromes (run_qrisp() may hand over plain lists).
+    # C-contiguous uint8 is what PyMatching's decode_batch expects.
+    det_events = np.ascontiguousarray(syndromes["det_events"], dtype=np.uint8)
+    obs_flips  = np.asarray(syndromes["obs_flips"], dtype=bool)
+    if obs_flips.ndim == 1:                      # one observable given as a flat list
+        obs_flips = obs_flips[:, None]
+    if det_events.ndim != 2 or obs_flips.ndim != 2:
+        raise ValueError(
+            "det_events must have shape (shots, num_detectors) and obs_flips "
+            f"(shots, num_observables); got {det_events.shape} and {obs_flips.shape}."
+        )
+    shots = det_events.shape[0]
+    if shots == 0 or obs_flips.shape[0] != shots:
+        raise ValueError(
+            f"Need the same, non-zero number of shots in det_events ({det_events.shape[0]}) "
+            f"and obs_flips ({obs_flips.shape[0]})."
+        )
 
-    ler,err = [], []
-    return ler, err
+    if dem is None:
+        # decompose_errors: PyMatching needs edges (<= 2 detectors); this raises instead of
+        #   silently degrading if a decomposition is impossible.
+        # approximate_disjoint_errors: lets PAULI_CHANNEL_* noise (e.g. from calibration
+        #   data) through; harmless for plain depolarizing noise.
+        dem = noisy_circuit.detector_error_model(
+            decompose_errors=True, approximate_disjoint_errors=True
+        )
+
+    if dem.num_errors == 0:
+        raise ValueError(
+            "The DEM has no error mechanisms, so there is nothing to weight the decoder "
+            "with. Was it built from the noiseless hardware circuit (noise=None)?"
+        )
+    if dem.num_detectors != det_events.shape[1]:
+        raise ValueError(
+            f"The DEM has {dem.num_detectors} detectors but det_events has "
+            f"{det_events.shape[1]} columns. The DEM must come from the circuit that ran "
+            "(same distance, rounds, basis and no_reset)."
+        )
+
+    matcher   = pymatching.Matching.from_detector_error_model(dem)
+    predicted = matcher.decode_batch(det_events).astype(bool)
+    if predicted.shape != obs_flips.shape:
+        # Without this check numpy could broadcast the mismatch away and report 0 errors.
+        raise ValueError(
+            f"The decoder predicts {predicted.shape[1]} observable(s) but obs_flips has "
+            f"{obs_flips.shape[1]}."
+        )
+
+    # A shot is a logical failure if ANY observable is mispredicted.
+    failed = np.any(predicted != obs_flips, axis=1)
+    n_fail = int(failed.sum())
+    ler    = n_fail / shots
+
+
+    p_err = ler if 0 < n_fail < shots else (n_fail + 0.5) / (shots + 1)
+    err   = float(np.sqrt(p_err * (1.0 - p_err) / shots))
+    return float(ler), err
