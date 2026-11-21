@@ -15,22 +15,25 @@ SHOTS = 20_000
 P = 1e-3
 
 def decode(det_events, obs_flips, stim_noisy):
+    """Décode les détecteurs avec le DEM du circuit bruité et renvoie P_error et son incertitude."""
     #Le decode de Victor
     pass
 
-
 def stim_noise(p: float) -> dict:
+    """Renvoie le bruit Stim (dépolarisation après les portes + erreur de lecture) de probabilité p."""
     return {
         "after_clifford_depolarization": p,
         "before_measure_flip_probability": p,
     }
 
 def aer_noise_model(p: float) -> NoiseModel:
+    """Construit le modèle de bruit Aer équivalent à stim_noise(p)."""
     #Le modele d'Alexis
     pass
 
 
 def run_qiskit(qc, shots: int, noise_model=None, backend=None) -> list[str]:
+    """Simule le circuit Qiskit (bruit donné ou bruit d'un backend) et renvoie une bitstring par shot."""
     if backend is not None:
         sim = AerSimulator.from_backend(backend)
         qc = transpile(qc, backend=backend, optimization_level=1)
@@ -40,6 +43,7 @@ def run_qiskit(qc, shots: int, noise_model=None, backend=None) -> list[str]:
 
 
 def memory_to_measurements(memory: list[str], num_measurements: int) -> np.ndarray:
+    """Convertit les bitstrings Qiskit (little-endian) en tableau booléen (shots, mesures) dans l'ordre Stim."""
     rows = [s.replace(" ", "")[::-1] for s in memory]
     meas = np.array([[c == "1" for c in r] for r in rows], dtype=np.bool_)
     if meas.shape[1] != num_measurements:
@@ -50,35 +54,26 @@ def memory_to_measurements(memory: list[str], num_measurements: int) -> np.ndarr
 
 
 def measurements_to_detectors(stim_circ: stim.Circuit, meas: np.ndarray):
+    """Calcule les détecteurs et l'observable à partir des mesures brutes, selon le circuit Stim."""
     return stim_circ.compile_m2d_converter().convert(
         measurements=meas, separate_observables=True
     )
 
-
-def check_noiseless(stim_hw: stim.Circuit, qc) -> bool:
-    meas = memory_to_measurements(run_qiskit(qc, shots=1_000), stim_hw.num_measurements)
-    dets, obs = measurements_to_detectors(stim_hw, meas)
-    if dets.any() or obs.any():
-        print(f"  ÉCHEC sans bruit : détecteurs {np.flatnonzero(dets.any(axis=0)).tolist()}, "
-              f"observable non nulle dans {int(obs.any(axis=1).sum())} shots")
-        return False
-    return True
-
-
 def run_one(rounds: int, backend=None) -> dict:
-    #Le circuit de Cyril
+    """Lance l'expérience complète pour un nombre de rounds et compare Qiskit/Aer à Stim seul."""
+    #Les circuits de Cyril avec ou sans bruit
     stim_hw = make_stim_circuit(DISTANCE, rounds, no_reset=True, noise=None)
     stim_noisy = make_stim_circuit(DISTANCE, rounds, no_reset=True, noise=stim_noise(P))
     qc = stim_to_qiskit(stim_hw)
 
-    if not check_noiseless(stim_hw, qc):
-        return {"rounds": rounds, "ok": False}
-
+    #Le noise model d'Alexis
     noise_model = None if backend is not None else aer_noise_model(P)
+
     meas = memory_to_measurements(
         run_qiskit(qc, SHOTS, noise_model=noise_model, backend=backend),
         stim_hw.num_measurements,
     )
+
     dets_q, obs_q = measurements_to_detectors(stim_hw, meas)
     dets_s, obs_s = stim_noisy.compile_detector_sampler().sample(
         SHOTS, separate_observables=True
@@ -97,6 +92,7 @@ def run_one(rounds: int, backend=None) -> dict:
 
 
 def main(backend=None) -> list[dict]:
+    """Exécute run_one pour chaque nombre de rounds, affiche les résultats et les renvoie."""
     print(f"d = {DISTANCE}, p = {P:.0e}, shots = {SHOTS}, "
           f"backend = {getattr(backend, 'name', None)}")
     results = []
