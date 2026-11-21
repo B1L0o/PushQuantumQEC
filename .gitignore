@@ -1,0 +1,5 @@
+__pycache__/
+*.pyc
+# secrets: keep the Resonance token in the TOKEN_IQM environment variable
+.env
+*.token

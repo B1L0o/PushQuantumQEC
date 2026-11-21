@@ -5,7 +5,17 @@ from extract_syndromes import *
 from qiskit import transpile    
 
 
-TOKEN = ""
+import os
+# Token from the environment, never from a committed file: export TOKEN_IQM=...
+def _read_token() -> str:
+    """TOKEN_IQM / IQM_TOKEN env var, else ~/.iqm_token (outside the repo, chmod 600)."""
+    tok = os.environ.get("TOKEN_IQM") or os.environ.get("IQM_TOKEN")
+    if not tok:
+        path = os.path.expanduser("~/.iqm_token")
+        if os.path.exists(path):
+            tok = open(path).read().strip()
+    return tok or ""
+TOKEN = _read_token()
 SERVER_URL = "https://resonance.iqm.tech"
 
 
@@ -26,11 +36,17 @@ def run_qiskit(
     token: str       = None,
     quantum_computer: str = "emerald",
     no_reset: bool   = True,
+    backend          = None,
+    noise_model      = None,
+    layout           = None,
+    optimization_level: int = 1,
+    dry_run: bool    = False,
 ) -> dict:
     """
     Build in qiskit. Runs the surface code on IQM Emerald via IQM Resonance.
 
-        Stim circuit → Qiskit circuit → transpile → run → counts
+        Stim circuit → Qiskit circuit → calibration-informed zero-SWAP layout
+        → transpile (routing disabled, verified) → run → counts
         → raw measurements → extract_syndromes()
 
     Parameters
@@ -41,58 +57,84 @@ def run_qiskit(
     token            : IQM Resonance API token (falls back to TOKEN)
     quantum_computer : e.g. "emerald"
     no_reset         : build the no-reset circuit (required on Emerald)
+    backend          : optional backend (e.g. IQMFakeAphrodite() for offline tests);
+                       None -> connect to IQM Resonance.
+    noise_model      : emerald_noise.EmeraldNoiseModel used to rank layouts.
+                       None -> live calibration of the backend when a token is
+                       available, else the published Emerald medians.
+    layout           : layout_search.LayoutScore to force a placement
+                       (e.g. the same one for every round count). None -> search.
+    optimization_level : passed to transpile (1 or 3; both keep 0 SWAPs).
+    dry_run          : build, place and transpile only; do not submit a job.
 
     Returns
     -------
     syndromes : dict  output of extract_syndromes()
                 "det_events" (shots, num_detectors), "obs_flips" (shots, num_observables), ...
+                plus "layout" (LayoutScore), "transpile_report" (zero-SWAP proof),
+                "noise_model_source" and, if available, "calibration_set_id".
     """
-    from iqm.qiskit_iqm import IQMProvider
+    from emerald_noise import EmeraldNoiseModel
+    from layout_search import find_best_layout, transpile_zero_swap
 
     # Build circuits, exchange for make_qiskit_circuit() if desired
     stim_circ  = make_stim_circuit(distance, rounds, no_reset=no_reset, noise=None)
+    qc, stim_to_dense, meas_order = stim_to_qiskit(stim_circ)
 
-    #CREATE A CIRCUIT TO BE EXECUTED ON HARDWARE
-    qc = []
-    #qc, stim_to_dense, meas_order = stim_to_qiskit(stim_circ)
-    #qc = make_qiskit_circuit(args)
+    # Connect to IQM Resonance (unless a backend, e.g. a fake one, is given)
+    if backend is None:
+        from iqm.qiskit_iqm import IQMProvider
+        provider = IQMProvider(SERVER_URL, quantum_computer=quantum_computer,
+                               token=token or TOKEN)
+        backend  = provider.get_backend()
 
+    # Noise model for ranking layouts: live calibration if possible
+    if noise_model is None:
+        if token or TOKEN:
+            noise_model = EmeraldNoiseModel.from_iqm(token or TOKEN, quantum_computer,
+                                                     SERVER_URL)
+        else:
+            noise_model = EmeraldNoiseModel()
+            print("[run_qiskit] no token: ranking layouts with published Emerald medians")
 
-    # OPTIONAL: IF YOU WANT TO ASSIGN QUBIT MAP BY HAND
-    # Map abstract Qiskit qubits to emerald physical qubits
-    qubit_map  = build_emerald_qubit_map(stim_circ)
+    # Calibration-informed zero-SWAP placement (enumerate all exact embeddings,
+    # rank them by simulated LER under the calibrated noise model)
+    if layout is None:
+        layout, _ = find_best_layout(stim_circ, backend, noise_model)
+    print(f"[run_qiskit] layout on {layout.physical_qubits} "
+          f"(simulated P_L = {layout.ler:.4f} +- {layout.ler_err:.4f})")
 
-    # HIGHLY RECOMMEND PRINTING THIS, if you are using it.
-    # print(qubit_map)
-    # initial_layout: Qiskit needs a list where position i = physical qubit for logical i
-    n_qubits   = qc.num_qubits
-    layout     = [qubit_map.get(i, i) for i in range(n_qubits)]
+    # Transpile with that layout and routing disabled; raises if any SWAP,
+    # off-coupler gate or measurement-order change would occur
+    qc_t, report = transpile_zero_swap(qc, backend, layout.stim_to_phys, stim_to_dense,
+                                       meas_order, optimization_level=optimization_level)
+    print(f"[run_qiskit] transpiled: {report['swaps']} SWAPs, "
+          f"{report['two_qubit_gates']}/{report['two_qubit_gates_ideal']} CZ, "
+          f"depth {report['depth']}")
 
-    # Connect to IQM Resonance
-    provider   = IQMProvider(
-        SERVER_URL,
-        quantum_computer=quantum_computer,
-        token=token or TOKEN
-    )
-    backend    = provider.get_backend()
-
-    # Transpile: Qiskit transpilerwill insert SWAPs for diagonal CX pairs automatically
-    # think about whether this is necessary
-    qc_t       = transpile(
-    # arguments
-    )
-    print(f"Transpiled circuit depth: {qc_t.depth()}  "
-          f"(ideal: {qc.depth()}, extra depth from SWAPs)")
+    extra = dict(layout=layout, transpile_report=report,
+                 noise_model_source=noise_model.source)
+    if dry_run:
+        return dict(extra, circuit=qc_t)
 
     # Run
     job        = backend.run(qc_t, shots=shots)
-    counts     = job.result().get_counts()
+    result     = job.result()
+    counts     = result.get_counts()
+    # Keep track of the calibration the job ran with (drift!), when exposed
+    cal_id = getattr(job, "calibration_set_id", None) or \
+        getattr(getattr(result, "metadata", None) or {}, "get", lambda *_: None)("calibration_set_id")
+    if cal_id is not None:
+        extra["calibration_set_id"] = str(cal_id)
 
     # Convert counts dict → (shots, num_measurements) numpy array
     raw_meas   = counts_to_measurement_array(counts, stim_circ.num_measurements,
                                                shots)
     # m2d converter must come from the circuit that actually ran
-    return extract_syndromes(raw_meas, stim_circ)
+    # keep the raw data: needed to re-decode, re-characterize and for the
+    # history-aware decoder (no-reset: raw m_(k-1) is the ancilla state)
+    extra.update(raw_meas=raw_meas, counts=counts)
+    return dict(extract_syndromes(raw_meas, stim_circ), **extra)
 
 
 

@@ -90,11 +90,16 @@ def graph_structure(dem: stim.DetectorErrorModel) -> GraphStructure:
                           dem.num_detectors, dem.num_observables)
 
 
-def estimate_edge_probabilities(dets: np.ndarray, structure: GraphStructure
+def estimate_edge_probabilities(dets: np.ndarray, structure: GraphStructure,
+                                fallback_to_prior: bool = False
                                 ) -> tuple[dict[tuple[int, int], float], dict[int, float]]:
     """Estimate bulk and boundary edge probabilities from detection events.
 
     dets : (shots, num_detectors) bool array.
+    fallback_to_prior : when an estimate is invalid (negative / NaN, from
+        statistical noise), use the model's probability instead of P_MIN.
+        Use True when building a decoder: a P_MIN edge gets an almost infinite
+        weight and breaks matching (seen with 10k shots on no-reset circuits).
     """
     x = dets.astype(np.float64)
     mean = x.mean(axis=0)
@@ -105,7 +110,10 @@ def estimate_edge_probabilities(dets: np.ndarray, structure: GraphStructure
         den = 1 - 2 * mean[i] - 2 * mean[j] + 4 * xij
         arg = 1 - num / den if den > 0 else float("nan")
         p = 0.5 - 0.5 * math.sqrt(arg) if arg >= 0 else float("nan")
-        est_edges[(i, j)] = float(np.clip(p, P_MIN, P_MAX)) if np.isfinite(p) else P_MIN
+        if np.isfinite(p) and p > P_MIN:
+            est_edges[(i, j)] = float(min(p, P_MAX))
+        else:
+            est_edges[(i, j)] = structure.edges[(i, j)] if fallback_to_prior else P_MIN
 
     # boundary: 1 - 2<x_i> = (1 - 2 p_iB) * prod_j (1 - 2 p_ij)
     prod = np.ones(structure.num_detectors)
@@ -116,7 +124,10 @@ def estimate_edge_probabilities(dets: np.ndarray, structure: GraphStructure
     for i in structure.boundary:
         ratio = (1 - 2 * mean[i]) / prod[i]
         p = 0.5 * (1 - ratio)
-        est_boundary[i] = float(np.clip(p, P_MIN, P_MAX))
+        if np.isfinite(p) and p > P_MIN:
+            est_boundary[i] = float(min(p, P_MAX))
+        else:
+            est_boundary[i] = structure.boundary[i] if fallback_to_prior else P_MIN
     return est_edges, est_boundary
 
 
@@ -145,7 +156,7 @@ def data_driven_matching(dets_train: np.ndarray, model_dem: stim.DetectorErrorMo
                          ) -> tuple[pymatching.Matching, dict, dict, GraphStructure]:
     """Convenience: structure from the model DEM, probabilities from data."""
     s = graph_structure(model_dem)
-    e, b = estimate_edge_probabilities(dets_train, s)
+    e, b = estimate_edge_probabilities(dets_train, s, fallback_to_prior=True)
     return matching_from_probabilities(s, e, b), e, b, s
 
 
