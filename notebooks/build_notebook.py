@@ -14,6 +14,8 @@ This notebook presents our approach and our results: running a **quantum memory 
 
 Everything uses the project code directly. By default it runs **offline**, from the hardware data we saved in `runs/`. The cells that need the QPU or a long training run are switched off by a flag.
 
+**How to run**: the notebook needs the whole repository (the project modules and the hardware data in `runs/`). From the repo root: `pip install -r requirements.txt`, then open `notebooks/surface_code_emerald.ipynb`. With the default flags it runs in under a minute on a laptop, with no QPU access and no GPU. The outputs are saved in the file, so it can also be read without running it.
+
 **Plan**
 
 1. The problem: protecting a qubit with the surface code
