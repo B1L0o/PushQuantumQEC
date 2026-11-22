@@ -246,23 +246,44 @@ class GNNDecoder:
     name = "GNN"
 
     def __init__(self, circuit: stim.Circuit, dem: stim.DetectorErrorModel,
-                 hidden: int = 64, layers: int = 4, seed: int = 0):
+                 hidden: int = 64, layers: int = 4, seed: int = 0,
+                 arch: str = "sage", features: str = "xyt_flags"):
+        """arch: "sage" (W_self h + W_nb A h, residual, DEM-weighted edges) or
+        "gcn" (Kipf & Welling: D^-1/2 (A+I) D^-1/2 H W, unweighted edges).
+        features: "xyt_flags" (x, y, t, first-round, final-round),
+        "xyt_flags_type" (same + X/Z stabilizer type), "xy_type" (x, y, X, Z)."""
         import torch
         self.torch = torch
         torch.manual_seed(seed)
+        self.arch = arch
         s = graph_structure(dem)
         n = s.num_detectors
         A = np.zeros((n, n), np.float32)
         for (i, j), p in s.edges.items():
-            w = math.log((1 - p) / max(p, 1e-6))
-            A[i, j] = A[j, i] = 1.0 / (1.0 + w)        # likely edge -> strong coupling
-        A /= np.maximum(A.sum(1, keepdims=True), 1e-6)
+            if arch == "gcn":
+                A[i, j] = A[j, i] = 1.0
+            else:
+                w = math.log((1 - p) / max(p, 1e-6))
+                A[i, j] = A[j, i] = 1.0 / (1.0 + w)    # likely edge -> strong coupling
+        if arch == "gcn":
+            A += np.eye(n, dtype=np.float32)
+            dinv = 1.0 / np.sqrt(A.sum(1))
+            A = A * dinv[:, None] * dinv[None, :]
+        else:
+            A /= np.maximum(A.sum(1, keepdims=True), 1e-6)
         coords = circuit.get_detector_coordinates()
         xyz = np.array([coords[k] for k in range(n)], np.float32)
         span = np.maximum(xyz.max(0) - xyz.min(0), 1)
         pos = (xyz - xyz.min(0)) / span
         t = xyz[:, 2]
-        static = np.column_stack([pos, t == t.min(), t == t.max()]).astype(np.float32)
+        first_xy = {tuple(xyz[k, :2]) for k in range(n) if t[k] == t.min()}
+        is_z = np.array([tuple(xyz[k, :2]) in first_xy for k in range(n)], np.float32)
+        if features == "xy_type":
+            static = np.column_stack([pos[:, :2], 1 - is_z, is_z]).astype(np.float32)
+        else:
+            static = np.column_stack([pos, t == t.min(), t == t.max()]).astype(np.float32)
+            if features == "xyt_flags_type":
+                static = np.column_stack([static, is_z]).astype(np.float32)
         self.A = torch.tensor(A)
         self.static = torch.tensor(static)
         f_in = 1 + static.shape[1]
@@ -280,7 +301,10 @@ class GNNDecoder:
                        self.static.unsqueeze(0).expand(det.shape[0], -1, -1)], -1)
         h = torch.relu(self.inp(x))
         for ws, wn in zip(self.w_self, self.w_nb):
-            h = torch.relu(ws(h) + wn(self.A @ h)) + h
+            if self.arch == "gcn":
+                h = torch.relu(ws(self.A @ h))
+            else:
+                h = torch.relu(ws(h) + wn(self.A @ h)) + h
         g = torch.cat([h.mean(1), h.max(1).values], -1)
         return self.head(g).squeeze(-1)
 
@@ -323,3 +347,115 @@ class GNNDecoder:
             for k in range(0, len(det), 4096):
                 out.append((self._forward(torch.tensor(det[k:k + 4096].astype(np.float32))) > 0).numpy())
         return np.concatenate(out)[:, None]
+
+
+class DefectGNNDecoder:
+    """Defect-graph GNN (Lange et al.; the approach of project/toric/train.py),
+    adapted to the planar code.
+
+    Each shot is its own graph: nodes = the detectors that FIRED, features
+    (x, y, t, X/Z type), edges = k nearest neighbours in space-time with weight
+    1/distance. Layers: GraphConv  h_i <- W1 h_i + W2 sum_j w_ij h_j, ReLU.
+    Readout: mean over nodes -> MLP -> logit. Shots with no defect predict
+    "no flip". Pure PyTorch (padding + masks), no torch_geometric needed.
+    """
+    name = "GNN (defect graph)"
+
+    def __init__(self, circuit: stim.Circuit, hidden: int = 128, layers: int = 4,
+                 k: int = 6, seed: int = 0):
+        import torch
+        self.torch, self.k = torch, k
+        torch.manual_seed(seed)
+        coords = circuit.get_detector_coordinates()
+        n = circuit.num_detectors
+        xyz = np.array([coords[i] for i in range(n)], np.float32)
+        t = xyz[:, 2]
+        first_xy = {tuple(xyz[i, :2]) for i in range(n) if t[i] == t.min()}
+        is_z = np.array([tuple(xyz[i, :2]) in first_xy for i in range(n)], np.float32)
+        span = np.maximum(xyz.max(0) - xyz.min(0), 1)
+        self.coords = torch.tensor(xyz)                          # raw, for distances
+        self.feat = torch.tensor(np.column_stack([(xyz - xyz.min(0)) / span, is_z]).astype(np.float32))
+        nn = torch.nn
+        self.w1 = nn.ModuleList([nn.Linear(4 if i == 0 else hidden, hidden) for i in range(layers)])
+        self.w2 = nn.ModuleList([nn.Linear(4 if i == 0 else hidden, hidden, bias=False) for i in range(layers)])
+        self.head = nn.Sequential(nn.Linear(hidden, hidden), nn.ReLU(), nn.Linear(hidden, 1))
+        self.params = [p for m in (*self.w1, *self.w2, self.head) for p in m.parameters()]
+
+    def _batch(self, det):
+        """Pad each shot's defects to the batch max: features, mask, kNN weights."""
+        torch = self.torch
+        det = torch.as_tensor(det, dtype=torch.bool)
+        m = int(det.sum(1).max().item()) if len(det) else 0
+        m = max(m, 1)
+        idx = torch.zeros((len(det), m), dtype=torch.long)
+        mask = torch.zeros((len(det), m), dtype=torch.bool)
+        for b in range(len(det)):
+            nz = torch.nonzero(det[b]).flatten()
+            idx[b, :len(nz)] = nz
+            mask[b, :len(nz)] = True
+        x = self.feat[idx] * mask.unsqueeze(-1)
+        c = self.coords[idx]
+        dist = torch.cdist(c, c)
+        big = torch.finfo(dist.dtype).max
+        dist = dist.masked_fill(~mask.unsqueeze(1) | ~mask.unsqueeze(2), big)
+        dist.diagonal(dim1=1, dim2=2).fill_(big)
+        kk = min(self.k, m - 1) if m > 1 else 0
+        W = torch.zeros((len(det), m, m))
+        if kk > 0:
+            d_k, j_k = torch.topk(dist, kk, dim=2, largest=False)
+            w = torch.where(d_k < big, 1.0 / d_k.clamp_min(1e-6), torch.zeros_like(d_k))
+            W.scatter_(2, j_k, w)
+        return x, mask, W
+
+    def _forward(self, x, mask, W):
+        torch = self.torch
+        h = x
+        for l1, l2 in zip(self.w1, self.w2):
+            h = torch.relu(l1(h) + l2(W @ h)) * mask.unsqueeze(-1)
+        pooled = h.sum(1) / mask.sum(1, keepdim=True).clamp_min(1)
+        return self.head(pooled).squeeze(-1)
+
+    def fit(self, det, obs, epochs: int = 20, batch: int = 512, lr: float = 2e-3,
+            val_frac: float = 0.1):
+        torch = self.torch
+        y_all = (obs[:, 0] if obs.ndim == 2 else obs).astype(np.float32)
+        keep = det.any(1)
+        det, y_all = det[keep], y_all[keep]
+        n_val = int(len(det) * val_frac)
+        Xv, yv = self._batch(det[:n_val]), torch.tensor(y_all[:n_val])
+        dt, yt = det[n_val:], y_all[n_val:]
+        opt = torch.optim.Adam(self.params, lr=lr, weight_decay=1e-5)
+        best, best_state, patience = 1.0, None, 0
+        for ep in range(epochs):
+            perm = np.random.permutation(len(dt))
+            for s in range(0, len(dt), batch):
+                ib = perm[s:s + batch]
+                loss = torch.nn.functional.binary_cross_entropy_with_logits(
+                    self._forward(*self._batch(dt[ib])), torch.tensor(yt[ib]))
+                opt.zero_grad(); loss.backward(); opt.step()
+            with torch.no_grad():
+                err = float(((self._forward(*Xv) > 0).float() != yv).float().mean())
+            if err < best - 1e-4:
+                best, patience = err, 0
+                best_state = [p.detach().clone() for p in self.params]
+            else:
+                patience += 1
+                if patience >= 5:
+                    break
+        if best_state:
+            for p, b in zip(self.params, best_state):
+                p.data.copy_(b)
+        return self
+
+    def decode(self, det: np.ndarray) -> np.ndarray:
+        torch = self.torch
+        out = np.zeros(len(det), dtype=bool)
+        any_def = det.any(1)
+        sub = det[any_def]
+        preds = []
+        with torch.no_grad():
+            for s in range(0, len(sub), 2048):
+                preds.append((self._forward(*self._batch(sub[s:s + 2048])) > 0).numpy())
+        if preds:
+            out[any_def] = np.concatenate(preds)
+        return out[:, None]

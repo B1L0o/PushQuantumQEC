@@ -1,0 +1,67 @@
+{
+ "ideal_cz": 72,
+ "rows": {
+  "Naive: QB1..QB17 in order": {
+   "cz": 222,
+   "depth": 150,
+   "sim_P": null,
+   "qubits": null,
+   "extra_cz": 150,
+   "swaps_equiv": 50.0
+  },
+  "Qiskit default layout": {
+   "cz": 72,
+   "depth": 25,
+   "sim_P": 0.21845,
+   "qubits": [
+    "QB1",
+    "QB2",
+    "QB3",
+    "QB4",
+    "QB5",
+    "QB6",
+    "QB9",
+    "QB10",
+    "QB11",
+    "QB12",
+    "QB13",
+    "QB18",
+    "QB19",
+    "QB20",
+    "QB21",
+    "QB26",
+    "QB27"
+   ],
+   "has_QB26": true,
+   "extra_cz": 0,
+   "swaps_equiv": 0.0
+  },
+  "Ours: calibrated + characterized": {
+   "cz": 72,
+   "depth": 25,
+   "sim_P": 0.17061,
+   "qubits": [
+    "QB19",
+    "QB20",
+    "QB27",
+    "QB28",
+    "QB29",
+    "QB30",
+    "QB34",
+    "QB35",
+    "QB36",
+    "QB37",
+    "QB38",
+    "QB42",
+    "QB43",
+    "QB44",
+    "QB45",
+    "QB50",
+    "QB51"
+   ],
+   "has_QB26": false,
+   "extra_cz": 0,
+   "swaps_equiv": 0.0
+  }
+ }
+}
