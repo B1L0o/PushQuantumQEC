@@ -146,8 +146,8 @@ with open(OUT / "decoders_table.tex", "w") as f:
         r, raw, mw, uf, bp, g_old, g_def = row
         g = g_def if use_defect else g_old
         vals = [mw, uf, bp, g]
-        best_v = min(vals)
-        cells = [f"\\textbf{{{pct(v)}}}" if v == best_v else pct(v) for v in vals]
+        best_v = min(round(v, 1) for v in vals)   # ties at display precision are all bold
+        cells = [f"\\textbf{{{pct(v)}}}" if round(v, 1) == best_v else pct(v) for v in vals]
         f.write(f"{r} & {pct(raw)} & " + " & ".join(cells) + " \\\\\n")
     f.write("\\midrule\n$\\varepsilon_L$ / round & " + " & ".join(
         f"{fits[k]['eps']:.1f}" for k in ("no correction", "MWPM", "Union-Find", "BP+OSD",
@@ -166,3 +166,14 @@ with open(OUT / "gnn_variants.tex", "w") as f:
         b = 100 * r3[key] if key in r3 else None
         f.write(f"{label} & {pct(a)} & {pct(b)} \\\\\n")
 print("tables written; GNN column =", "defect graph" if use_defect else "fixed-graph GNN")
+
+# 10. GNN ablation: scramble one ancilla's detectors, how many decisions change
+ab = FIG / "ablation.json"
+if ab.exists():
+    a = json.loads(ab.read_text())
+    z_anc = [q for q, v in a["ancillas"].items() if v["MWPM"]["changed"] > 0]   # Z-type: feed the observable
+    write("ablation.dat", ["i", "q", "gnn", "mwpm", "dgnn", "dmwpm"],
+          [(i, q, 100 * a["ancillas"][q]["GNN"]["changed"], 100 * a["ancillas"][q]["MWPM"]["changed"],
+            100 * (a["ancillas"][q]["GNN"]["P_L"] - a["P_L"]["GNN"]),
+            100 * (a["ancillas"][q]["MWPM"]["P_L"] - a["P_L"]["MWPM"])) for i, q in enumerate(z_anc)])
+    print("ablation:", z_anc)

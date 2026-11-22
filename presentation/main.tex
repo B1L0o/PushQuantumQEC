@@ -352,6 +352,33 @@ MWPM & 8.2 & 16.3\\
 \end{frame}
 
 % ─────────────────────────────────────────────────────────────────────────────
+\begin{frame}{The GNN found the broken qubit by itself}
+\eyebrow{7 \textperiodcentered\ Ablation: scramble one ancilla, count changed decisions}
+\begin{columns}[T]
+\begin{column}{0.60\textwidth}
+\begin{tikzpicture}
+\begin{axis}[deck, height=0.70\textheight, ybar=2pt, /pgf/bar width=11pt, ymin=0, ymax=29,
+  xtick={0,...,3}, xticklabels={QB10,QB26,QB28,QB44}, x tick label style={font=\footnotesize,color=ink},
+  enlarge x limits=0.18, grid=none, ymajorgrids, ylabel={decisions changed (\%)},
+  legend style={at={(0.02,0.98)},anchor=north west},
+  nodes near coords={\pgfmathprintnumber[fixed,precision=0]{\pgfplotspointmeta}},
+  every node near coord/.append style={font=\tiny,color=soft}]
+  \addplot[fill=cblue,draw=none] table[x=i,y=mwpm] {data/ablation.dat}; \addlegendentry{MWPM}
+  \addplot[fill=corange,draw=none] table[x=i,y=gnn] {data/ablation.dat}; \addlegendentry{GNN}
+  \draw[accent,line width=1pt] (axis cs:0.62,-0.6) rectangle (axis cs:1.38,17.5);
+\end{axis}
+\end{tikzpicture}
+\end{column}
+\begin{column}{0.38\textwidth}\footnotesize
+Hardware run \emph{with} QB26, 2 rounds, 15\,000 test shots. One Z ancilla's detectors are shuffled across shots: same firing rate, no information.\\[5pt]
+\textbf{MWPM} trusts QB26: 15\,\% of its decisions change and its $P_L$ \emph{drops} ($17.7\rightarrow17.1\,\%$). QB26's syndrome is pure noise.\\[5pt]
+\textbf{GNN}: only 5\,\% change. From shots alone it learned to lean on QB28 instead.\\[5pt]
+{\scriptsize\color{soft} X ancillas do not touch the Z observable. The GNN also leans less on QB10, which shares data qubits with QB28.}
+\end{column}
+\end{columns}
+\end{frame}
+
+% ─────────────────────────────────────────────────────────────────────────────
 \begin{frame}{From error probability to error rate per round}
 \eyebrow{8 \textperiodcentered\ Fit over round counts}
 \begin{columns}[T]
@@ -443,7 +470,7 @@ $\div 4$ & \textbf{1.97} & \textbf{2.00}\\
 \end{column}
 \begin{column}{0.31\textwidth}
 {\color{accent!80!white}\Large\bfseries Found}\\[4pt]
-{\small\color{panel} Calibration misses what limits the code: QB26 scrambled by its own readout, and ancilla errors that depend on their last result. Only the syndromes show it.}
+{\small\color{panel} Calibration misses what limits the code: QB26 scrambled by its own readout, and ancilla errors that depend on their last result. Only the syndromes show it, and a GNN trained on them learns to distrust QB26 on its own.}
 \end{column}
 \begin{column}{0.31\textwidth}
 {\color{accent!80!white}\Large\bfseries Measured}\\[4pt]
