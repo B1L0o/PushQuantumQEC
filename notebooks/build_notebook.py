@@ -8,7 +8,7 @@ code = lambda s: cells.append(nbf.v4.new_code_cell(s.strip()))
 md(r"""
 # A distance-3 surface code on IQM Emerald
 
-**IQM QEC challenge** — [Team name] · [Names]
+**IQM QEC challenge** — Epita-Q · Alexis, Cyril, Robin, Victor
 
 This notebook presents our approach and our results: running a **quantum memory experiment** on IQM's 54-qubit processor **Emerald**. We use a distance-3 **rotated surface code** without mid-circuit reset, decode it, and measure how fast the encoded (logical) qubit loses its information.
 
